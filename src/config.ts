@@ -8,7 +8,7 @@ export const config = {
 
   // Whisper backend: an OpenAI-compatible /v1/audio/transcriptions endpoint.
   // speaches default port is 8000. On Windows host reachable from WSL via its LAN IP.
-  // Example: http://192.168.1.140:8000/v1  (or http://<windows-host-ip>:8000/v1)
+  // Example: http://<whisper-host-ip>:8000/v1  (use the host LAN IP from WSL2)
   whisperBaseURL: process.env.WHISPER_BASE_URL ?? "http://localhost:8000/v1",
 
   // Model id the Whisper backend should use. speaches uses HF ids.

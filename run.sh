@@ -3,7 +3,7 @@
 # If the shim is killed (e.g. WSL OOM reaper / SIGKILL), it restarts instantly.
 # Run this in a WebStorm terminal tab and leave it open.
 #
-#   cd ~/WebstormProjects/kimaki-whisper-shim && ./run.sh
+#   cd kimaki-whisper-shim && ./run.sh   (or use ./scripts/run-shim.sh)
 #
 # Ctrl+C twice to stop (once kills the shim, the trap stops the loop).
 

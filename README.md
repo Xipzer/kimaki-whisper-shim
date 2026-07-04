@@ -1,83 +1,158 @@
 # Kimaki Whisper Shim
 
-Local, free, GPU-accelerated voice-note transcription for Kimaki — replaces the
-paid Gemini/OpenAI transcription with a local Whisper backend, **without patching
-Kimaki**.
+Local, free, GPU-accelerated **voice-note transcription for Kimaki** — replaces
+the paid Gemini/OpenAI cloud transcription with a self-hosted Whisper backend,
+**without patching Kimaki**. Point one environment variable at the shim and your
+Discord voice notes are transcribed on your own GPU.
 
-## What it does
+## Why this exists
 
 Kimaki transcribes Discord voice notes by sending an OpenAI/Gemini **chat
-completion** request that contains a text prompt + an audio file part, and forces
-the model to call a `transcriptionResult` tool. This shim impersonates that
-OpenAI chat endpoint, extracts the audio, sends it to a local Whisper server
-(`speaches`), and returns the transcript wrapped as the expected tool call.
+completion** that contains a text prompt + an audio file part, and forces the
+model to call a `transcriptionResult` tool. A plain Whisper server (which speaks
+`/v1/audio/transcriptions`) can't answer that request shape.
+
+This shim bridges the gap: it **impersonates the OpenAI chat endpoint**, extracts
+the audio, forwards it to a local Whisper server, and returns the transcript
+wrapped as the exact `transcriptionResult` tool call Kimaki expects. No Kimaki
+source changes — just set `OPENAI_BASE_URL`.
 
 ```
-Discord voice note
+Discord voice note (.ogg)
       │
       ▼
 Kimaki  --(OPENAI_BASE_URL=http://localhost:7070/v1)-->  SHIM (Bun, :7070)
-                                                            │
-                                          /v1/audio/transcriptions
+                                                            │  extract audio part
+                                                /v1/audio/transcriptions
                                                             ▼
-                                          speaches (GPU Whisper, :8000)
-                                                            │
-                                              4070 SUPER (CUDA, WSL2)
+                                            Whisper backend (GPU, :8000)
+                                            speaches / whisper.cpp / faster-whisper
       ◄── transcriptionResult tool call ──────────────────┘
 ```
 
-## Components
+## Two moving parts
 
-| Piece | Where | Port | Notes |
-|---|---|---|---|
-| `speaches` | `~/speaches-server` | 8000 | faster-whisper large-v3 on the 4070 Super |
-| this shim | `~/WebstormProjects/kimaki-whisper-shim` | 7070 | protocol translation + queue/agent rules |
-| Kimaki | your shell | — | points `OPENAI_BASE_URL` at the shim |
+| Piece | Port | Role |
+|---|---|---|
+| **This shim** (Bun/TypeScript) | 7070 | Protocol translation + rule-based queue/agent detection |
+| **A Whisper backend** | 8000 | Any OpenAI-compatible `/v1/audio/transcriptions` server on your GPU |
 
-## Start everything
+Pick whichever Whisper backend fits your hardware:
+
+| Backend | Best for | Guide |
+|---|---|---|
+| **speaches** (faster-whisper) | NVIDIA / CUDA (Linux, WSL2) | below |
+| **whisper.cpp** server | Apple Silicon (Metal), or CPU | [docs/setup-macos-metal.md](docs/setup-macos-metal.md) |
+| **faster-whisper-server** | NVIDIA / CUDA alternative | drop-in, same API |
+
+## Quick start (NVIDIA / speaches)
+
+### 1. Run the shim
 
 ```bash
-# 1. Start the Whisper backend (GPU)
-cd ~/speaches-server && ./run-speaches.sh        # or via tuistory: -s speaches
+git clone <this-repo> kimaki-whisper-shim
+cd kimaki-whisper-shim
+cp .env.example .env          # edit WHISPER_BASE_URL if the backend is remote
+bun install
+./scripts/run-shim.sh         # auto-respawn wrapper; leave running
+```
 
-# 2. Start the shim
-cd ~/WebstormProjects/kimaki-whisper-shim && bun run src/index.ts
+### 2. Run the Whisper backend (speaches, GPU)
 
-# 3. Wire Kimaki (in the shell that runs kimaki), then restart it
-export OPENAI_API_KEY=local-shim                  # any value; selects "openai" provider
+```bash
+# One-time: clone + install speaches
+git clone https://github.com/speaches-ai/speaches.git ~/speaches-server
+cd ~/speaches-server && uv venv && uv sync
+
+# Launch with the CUDA/cuDNN lib-path fix + model preload
+SPEACHES_DIR=~/speaches-server /path/to/kimaki-whisper-shim/scripts/run-speaches.sh
+```
+
+`scripts/run-speaches.sh` handles the WSL2 gotcha where only the base CUDA driver
+is injected but cuDNN is not — it adds the venv's bundled `nvidia/*/lib` dirs to
+`LD_LIBRARY_PATH` so faster-whisper (CTranslate2) can load `libcudnn_cnn.so.9`.
+It also preloads the model and keeps it resident (`STT_MODEL_TTL=-1`) so there's
+no cold-load penalty per voice note. All knobs are env vars — see the top of the
+script.
+
+### 3. Wire Kimaki (no patch)
+
+```bash
+export OPENAI_API_KEY=local-shim                  # any value; selects the "openai" provider
 export OPENAI_BASE_URL=http://localhost:7070/v1   # routes to the shim
 kimaki
 ```
 
-> `run-speaches.sh` sets `LD_LIBRARY_PATH` to the venv's bundled CUDA/cuDNN libs
-> (WSL only injects the base CUDA driver, not cuDNN) and `HF_HUB_CACHE` to ext4.
+Full instructions (clearing stored cloud keys, making it durable, troubleshooting)
+in **[docs/kimaki-integration.md](docs/kimaki-integration.md)**.
 
-## Config (.env)
+## Configuration (`.env`)
 
-See `.env.example`. Key vars:
-
-- `SHIM_PORT` (7070)
-- `WHISPER_BASE_URL` (`http://localhost:8000/v1`)
-- `WHISPER_MODEL` (`Systran/faster-whisper-large-v3`)
-- `WHISPER_LANGUAGE` ("" = autodetect)
-- `SHIM_API_KEY` ("" = accept any; set to require Kimaki's OPENAI_API_KEY to match)
+| Var | Default | Notes |
+|---|---|---|
+| `SHIM_PORT` | `7070` | Port the shim listens on |
+| `WHISPER_BASE_URL` | `http://localhost:8000/v1` | Backend URL. Use the host LAN IP if the backend is on another machine (e.g. shim in WSL2, Whisper on Windows GPU) |
+| `WHISPER_MODEL` | `Systran/faster-whisper-large-v3` | HF id for speaches; `whisper-1` for whisper.cpp |
+| `WHISPER_API_KEY` | `none` | Most local backends need no key |
+| `WHISPER_LANGUAGE` | `` | `""` = autodetect |
+| `SHIM_API_KEY` | `` | If set, requires Kimaki's `OPENAI_API_KEY` to match |
+| `SHIM_LOG_LEVEL` | `info` | `debug` \| `info` \| `error` |
 
 ## Smart features (rule-based, no second LLM)
 
-- **Queue detection**: "queue this message …" → sets `queueMessage: true` and strips the phrase.
-- **Agent selection**: "use the X agent" / "switch to X agent" → sets `agent` (only the
-  agent enum Kimaki provided). Plain words like "plan the refactor" do NOT trigger it.
+The shim reproduces the behaviour Kimaki asks its transcription model to perform,
+deterministically — no extra model call:
 
-## Health
+- **Queue detection** — "queue this message …" → sets `queueMessage: true` and
+  strips the phrase from the transcript.
+- **Agent selection** — "use the X agent" / "switch to X agent" → sets `agent`
+  (only against the agent enum Kimaki provided). Plain speech like "plan the
+  refactor" does **not** trigger it.
+
+## Health & smoke test
 
 ```bash
-curl http://localhost:7070/health      # {"ok":true,...}
-curl http://localhost:8000/health      # {"message":"OK"}
+curl http://localhost:7070/health      # {"ok":true,...}   (shim)
+curl http://localhost:8000/health      # {"message":"OK"}  (speaches backend)
+
+# Full end-to-end (downloads a JFK sample, transcribes, checks tool call):
+./scripts/smoke-test.sh
 ```
 
-## Verified
+## Split-machine setups (WSL2 + Windows GPU, etc.)
 
-- speaches transcribes on the 4070 Super (CUDA), ~1-4s per voice note.
-- Shim returns a valid `transcriptionResult` tool call for a Kimaki-shaped
-  chat-with-audio request.
-- Queue/agent rules pass unit cases including negatives.
+If the shim and the Whisper backend run on **different machines** (common: shim
+in WSL2, speaches on the Windows GPU host), set `WHISPER_BASE_URL` to the
+backend's **LAN IP**, not `localhost` — WSL2's `localhost` is not the Windows
+host. Start the backend with `--host 0.0.0.0` so it's reachable.
+
+## Repository layout
+
+```
+kimaki-whisper-shim/
+├── src/
+│   ├── index.ts        Bun HTTP server: OpenAI chat-completions -> Whisper
+│   ├── whisper.ts      OpenAI-compatible /v1/audio/transcriptions client
+│   ├── postprocess.ts  Rule-based queue + agent detection
+│   └── config.ts       Env-driven config
+├── scripts/
+│   ├── run-shim.sh     Shim runner with auto-respawn
+│   ├── run-speaches.sh Portable speaches launcher (CUDA/cuDNN fix + preload)
+│   └── smoke-test.sh   End-to-end verification
+├── docs/
+│   ├── kimaki-integration.md      Wiring Kimaki to the shim
+│   ├── setup-macos-metal.md       Apple Silicon (whisper.cpp / Metal)
+│   └── connect-kimaki-to-local-llm.md  Bonus: local LLM as a /model provider
+├── .env.example
+└── README.md
+```
+
+## Companion: run a local LLM in Kimaki too
+
+Not required for transcription, but if you also want to serve a **local LLM**
+(llama.cpp) as a selectable Kimaki `/model`, see
+[docs/connect-kimaki-to-local-llm.md](docs/connect-kimaki-to-local-llm.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
