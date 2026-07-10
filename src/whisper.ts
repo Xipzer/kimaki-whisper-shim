@@ -56,5 +56,9 @@ export async function transcribeWithWhisper(input: WhisperInput): Promise<string
   }
 
   const data = (await res.json()) as { text?: string };
-  return (data.text ?? "").trim();
+  // whisper.cpp emits a newline after each audio segment (at natural speech
+  // pauses), which renders as awkward multi-line text in Discord. Collapse all
+  // internal whitespace/newlines into single spaces so the transcript reads as
+  // one flowing paragraph (matching the cloud/faster-whisper backends).
+  return (data.text ?? "").replace(/\s+/g, " ").trim();
 }
