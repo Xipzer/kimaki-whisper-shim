@@ -42,8 +42,29 @@ curl -L -o ~/whisper-models/ggml-large-v3.bin \
 whisper-server \
   -m ~/whisper-models/ggml-large-v3.bin \
   --host 0.0.0.0 --port 8000 \
-  --inference-path /v1/audio/transcriptions -t 8
+  --inference-path /v1/audio/transcriptions -t 8 \
+  -bs 5 -bo 5 -mc 64 -et 2.8 --suppress-nst -l en
 ```
+
+> **The extra flags are important — they prevent Whisper hallucination loops.**
+> Stock `whisper-server` uses greedy decoding with unbounded context, which on
+> longer voice notes (1 min+) with natural pauses tends to (a) get stuck
+> repeating the last sentence, and (b) emit a column of `,,` / `"` punctuation
+> tokens over silent stretches. faster-whisper (the CUDA backend) has these
+> guards on by default; whisper.cpp does not, so we set them explicitly:
+>
+> | Flag | Effect |
+> |---|---|
+> | `-bs 5` | beam search (5 beams) instead of greedy — kills repetition loops |
+> | `-bo 5` | keep 5 best candidates for the beam |
+> | `-mc 64` | cap context tokens so repeated output can't feed back and amplify |
+> | `-et 2.8` | entropy threshold — triggers temperature fallback on stuck decodes |
+> | `--suppress-nst` | suppress non-speech tokens — removes the `,,` / `"` silence hallucination |
+> | `-l en` | pin language to English (skip autodetect drift over pauses) |
+>
+> If you speak a non-English language, change `-l en` to your language code or
+> `-l auto`. If you still see loops on very long/noisy notes, add `-nf`
+> (no temperature fallback) or drop to the `ggml-medium` model.
 
 Verify:
 
@@ -96,6 +117,7 @@ resident afterward.
 |---|---|---|
 | Whisper backend | speaches + faster-whisper, needs cuDNN lib-path fix | whisper.cpp, Metal built-in — no lib wrangling |
 | GPU acceleration | `/dev/dxg` + injected CUDA libs | native Metal — just works |
+| Anti-hallucination | on by default (faster-whisper/CTranslate2) | must set flags explicitly (see §1) |
 | Shell rc | `~/.bashrc` | `~/.zshrc` |
 | Shim OOM guard | `oom_score_adj` (Linux) | not needed |
 | Shim code | identical | identical |

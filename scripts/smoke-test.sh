@@ -33,7 +33,7 @@ BACKEND_TEXT="$(curl -sf -m 60 "$WHISPER_URL/audio/transcriptions" \
 [ -n "$BACKEND_TEXT" ] && pass "backend transcript: $BACKEND_TEXT" || fail "backend returned no text"
 
 echo "== 3. shim wraps a Kimaki-shaped request as a tool call =="
-AUDIO_B64="$(base64 -w0 "$SAMPLE" 2>/dev/null || base64 "$SAMPLE" | tr -d '\n')"
+AUDIO_B64="$(base64 -w0 "$SAMPLE" 2>/dev/null || base64 -i "$SAMPLE" 2>/dev/null | tr -d '\n' || base64 < "$SAMPLE" | tr -d '\n')"
 REQ="$(printf '{"model":"gpt-audio","messages":[{"role":"user","content":[{"type":"text","text":"transcribe"},{"type":"input_audio","input_audio":{"data":"%s","format":"wav"}}]}],"tools":[{"type":"function","function":{"name":"transcriptionResult","parameters":{"type":"object","properties":{"transcription":{"type":"string"}}}}}]}' "$AUDIO_B64")"
 SHIM_RESP="$(echo "$REQ" | curl -sf -m 60 "$SHIM_URL/v1/chat/completions" \
   -H 'content-type: application/json' -H 'authorization: Bearer local-shim' \
