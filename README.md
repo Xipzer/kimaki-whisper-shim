@@ -86,6 +86,37 @@ kimaki
 Full instructions (clearing stored cloud keys, making it durable, troubleshooting)
 in **[docs/kimaki-integration.md](docs/kimaki-integration.md)**.
 
+## One command for the whole GPU stack (`run-stack.sh`)
+
+The shim is a thin proxy — it needs speaches running behind it. Instead of
+launching the two services separately, `scripts/run-stack.sh` brings up **both as
+one process group**: it starts speaches, waits for it to be healthy, then starts
+the shim. On stop, a single group-SIGTERM tears both down and frees the GPU.
+
+```bash
+SPEACHES_DIR=~/speaches-server ./scripts/run-stack.sh
+```
+
+This is the launcher to point Kimaki's **`/whisper-start`** at, so one command
+spins up your entire transcription pipeline and `/whisper-stop` shuts it all down
+(freeing VRAM). Configure it in Discord:
+
+```
+/whisper-setup  backend: Custom  command: /abs/path/to/kimaki-whisper-shim/scripts/run-stack.sh  health-url: http://localhost:7070/v1
+```
+
+or in a terminal:
+
+```bash
+kimaki whisper setup \
+  --command "$PWD/scripts/run-stack.sh" \
+  --health-url http://localhost:7070/health
+kimaki whisper start   # brings up speaches + shim; /whisper-stop tears both down
+```
+
+Knobs (all env vars): `SPEACHES_DIR`, `SPEACHES_HEALTH`, `SPEACHES_WAIT_SECS`,
+`SHIM_LAUNCHER`.
+
 ## Configuration (`.env`)
 
 | Var | Default | Notes |
@@ -138,6 +169,7 @@ kimaki-whisper-shim/
 ├── scripts/
 │   ├── run-shim.sh     Shim runner with auto-respawn
 │   ├── run-speaches.sh Portable speaches launcher (CUDA/cuDNN fix + preload)
+│   ├── run-stack.sh    Full GPU stack (speaches + shim) as one process group
 │   └── smoke-test.sh   End-to-end verification
 ├── docs/
 │   ├── kimaki-integration.md      Wiring Kimaki to the shim
