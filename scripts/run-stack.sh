@@ -30,10 +30,15 @@ cleanup() {
 trap cleanup INT TERM
 
 # 1. speaches (GPU whisper backend) — new process group so we can group-kill it.
-# Uses the repo's portable launcher (CUDA/cuDNN lib-path fix + model preload).
-log "starting speaches (SPEACHES_DIR=$SPEACHES_DIR)..."
-SPEACHES_DIR="$SPEACHES_DIR" setsid "$SHIM_DIR/scripts/run-speaches.sh" &
-pids+=("$!")
+# If one is ALREADY healthy (started elsewhere), reuse it instead of spawning a
+# doomed duplicate that fails to bind :8000 and takes the whole stack down.
+if curl -sf -m 3 "$SPEACHES_HEALTH" >/dev/null 2>&1; then
+  log "speaches already healthy — reusing existing instance"
+else
+  log "starting speaches (SPEACHES_DIR=$SPEACHES_DIR)..."
+  SPEACHES_DIR="$SPEACHES_DIR" setsid "$SHIM_DIR/scripts/run-speaches.sh" &
+  pids+=("$!")
+fi
 
 # 2. wait for speaches to answer health before starting the shim.
 log "waiting for speaches at $SPEACHES_HEALTH (up to ${SPEACHES_WAIT_SECS}s)..."
